@@ -57,26 +57,26 @@ function rotation(){let a=rx*Math.PI/180,b=(ry+phase)*Math.PI/180,ca=Math.cos(a)
 function objectMatrix(){const [a,b,c]=obj.rotation.map(x=>x*Math.PI/180),[sx,sy,sz]=obj.scale,[tx,ty,tz]=obj.location,ca=Math.cos(a),sa=Math.sin(a),cb=Math.cos(b),sb=Math.sin(b),cc=Math.cos(c),sc=Math.sin(c);return new Float32Array([cc*cb*sx,sc*cb*sx,-sb*sx,0,(cc*sb*sa-sc*ca)*sy,(sc*sb*sa+cc*ca)*sy,cb*sa*sy,0,(cc*sb*ca+sc*sa)*sz,(sc*sb*ca-cc*sa)*sz,cb*ca*sz,0,tx,ty,tz,1])}
 function rotation3FromModel(m){const n=[Math.hypot(m[0],m[1],m[2]),Math.hypot(m[4],m[5],m[6]),Math.hypot(m[8],m[9],m[10])];return new Float32Array([m[0]/n[0],m[1]/n[0],m[2]/n[0],m[4]/n[1],m[5]/n[1],m[6]/n[1],m[8]/n[2],m[9]/n[2],m[10]/n[2]])}
 
+// Selection overlay: render mesh edges in solid orange, independent of lighting.
 function drawSelectionOutline(mvp){
- if(!selected)return;
+ if(!selected||!mesh)return;
  if(!drawSelectionOutline.program){
-  const v='attribute vec3 aPos;attribute vec3 aNormal;uniform mat4 uMVP;void main(){gl_Position=uMVP*vec4(aPos*1.045,1.0);}';
-  const f='precision mediump float;void main(){gl_FragColor=vec4(1.0,0.46,0.055,1.0);}';
+  const v='attribute vec3 aPos;uniform mat4 uMVP;void main(){gl_Position=uMVP*vec4(aPos*1.006,1.0);}';
+  const f='precision mediump float;void main(){gl_FragColor=vec4(1.0,0.46,0.025,1.0);}';
   const p=gl.createProgram();gl.attachShader(p,shader(gl.VERTEX_SHADER,v));gl.attachShader(p,shader(gl.FRAGMENT_SHADER,f));gl.linkProgram(p);
   if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(p));
-  drawSelectionOutline.program=p;drawSelectionOutline.pos=gl.getAttribLocation(p,'aPos');drawSelectionOutline.normal=gl.getAttribLocation(p,'aNormal');drawSelectionOutline.mvp=gl.getUniformLocation(p,'uMVP');
+  drawSelectionOutline.program=p;drawSelectionOutline.pos=gl.getAttribLocation(p,'aPos');drawSelectionOutline.mvp=gl.getUniformLocation(p,'uMVP');
+  drawSelectionOutline.buffer=gl.createBuffer();
  }
  gl.useProgram(drawSelectionOutline.program);
  gl.uniformMatrix4fv(drawSelectionOutline.mvp,false,mvp);
- gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
- gl.enableVertexAttribArray(drawSelectionOutline.pos);gl.enableVertexAttribArray(drawSelectionOutline.normal);
- gl.vertexAttribPointer(drawSelectionOutline.pos,3,gl.FLOAT,false,24,0);
- gl.vertexAttribPointer(drawSelectionOutline.normal,3,gl.FLOAT,false,24,12);
- gl.cullFace(gl.FRONT);
- gl.depthMask(false);
- gl.depthFunc(gl.LEQUAL);
- gl.drawArrays(gl.TRIANGLES,0,mesh.tri.length/6);
- gl.depthMask(true);gl.depthFunc(gl.LESS);gl.cullFace(gl.BACK);
+ gl.bindBuffer(gl.ARRAY_BUFFER,drawSelectionOutline.buffer);
+ gl.bufferData(gl.ARRAY_BUFFER,mesh.lines,gl.DYNAMIC_DRAW);
+ gl.enableVertexAttribArray(drawSelectionOutline.pos);
+ gl.vertexAttribPointer(drawSelectionOutline.pos,3,gl.FLOAT,false,12,0);
+ gl.disable(gl.CULL_FACE);gl.disable(gl.DEPTH_TEST);
+ gl.drawArrays(gl.LINES,0,mesh.lines.length/3);
+ gl.enable(gl.DEPTH_TEST);gl.enable(gl.CULL_FACE);
  gl.useProgram(program);
  gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
  gl.enableVertexAttribArray(attrib.pos);gl.enableVertexAttribArray(attrib.normal);
@@ -84,25 +84,25 @@ function drawSelectionOutline(mvp){
  gl.vertexAttribPointer(attrib.normal,3,gl.FLOAT,false,24,12);
 }
 function pickObject(clientX,clientY){
- // Screen-space triangle hit testing with the exact same MVP used by the renderer.
+ // Project the actual mesh vertices and test against their visible screen bounds.
  const rect=canvas.getBoundingClientRect(),w=rect.width,h=rect.height;
  if(w<1||h<1||!mesh)return false;
  const rot=rotation(),model=new Float32Array([rot[0],rot[1],rot[2],0,rot[3],rot[4],rot[5],0,rot[6],rot[7],rot[8],0,0,0,0,1]);
  const view=new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,pan[0],pan[1],-zoom,1]);
  const near=.1,far=100,f=1/Math.tan(Math.PI/7),aspect=w/h;
  const proj=ortho?new Float32Array([1/(aspect*zoom*.36),0,0,0,0,1/(zoom*.36),0,0,0,0,-2/(far-near),0,0,0,-(far+near)/(far-near),1]):new Float32Array([f/aspect,0,0,0,0,f,0,0,0,0,(far+near)/(near-far),-1,0,0,2*far*near/(near-far),0]);
- const mvp=matMul(proj,matMul(view,matMul(model,objectMatrix())));
- const project=(x,y,z)=>{const a=mvp,px=a[0]*x+a[4]*y+a[8]*z+a[12],py=a[1]*x+a[5]*y+a[9]*z+a[13],pw=a[3]*x+a[7]*y+a[11]*z+a[15];return pw>0?[(px/pw+1)*w/2,(1-py/pw)*h/2]:null};
- const mx=clientX-rect.left,my=clientY-rect.top,tri=mesh.tri;
- for(let i=0;i<tri.length;i+=18){
-  const p=project(tri[i],tri[i+1],tri[i+2]),q=project(tri[i+6],tri[i+7],tri[i+8]),r=project(tri[i+12],tri[i+13],tri[i+14]);
-  if(!p||!q||!r)continue;
-  const cross=(a,b,c)=>(b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);
-  const area=cross(p,q,r);if(Math.abs(area)<1e-7)continue;
-  const pt=[mx,my],u=cross(p,q,pt)/area,v=cross(q,r,pt)/area,t=cross(r,p,pt)/area;
-  if(u>=-1e-5&&v>=-1e-5&&t>=-1e-5)return true;
+ const m=matMul(proj,matMul(view,matMul(model,objectMatrix())));
+ let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity,seen=0;
+ const tri=mesh.tri;
+ for(let i=0;i<tri.length;i+=6){
+  const x=tri[i],y=tri[i+1],z=tri[i+2],px=m[0]*x+m[4]*y+m[8]*z+m[12],py=m[1]*x+m[5]*y+m[9]*z+m[13],pw=m[3]*x+m[7]*y+m[11]*z+m[15];
+  if(pw<=0)continue;
+  const sx=(px/pw+1)*w*.5,sy=(1-py/pw)*h*.5;
+  minX=Math.min(minX,sx);maxX=Math.max(maxX,sx);minY=Math.min(minY,sy);maxY=Math.max(maxY,sy);seen++;
  }
- return false;
+ if(!seen)return false;
+ const mx=clientX-rect.left,my=clientY-rect.top;
+ return mx>=minX-3&&mx<=maxX+3&&my>=minY-3&&my<=maxY+3;
 }
 function setSelected(value){selected=value;$('status').textContent=selected?'Object selected · '+shape:'Object Mode · no selection';const row=$('objectRow');if(row)row.classList.toggle('selected',selected);dirty=true}
 
