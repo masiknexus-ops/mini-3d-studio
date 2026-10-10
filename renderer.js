@@ -9,7 +9,7 @@ function shader(type,src){let s=gl.createShader(type);gl.shaderSource(s,src);gl.
 const program=gl.createProgram();gl.attachShader(program,shader(gl.VERTEX_SHADER,vs));gl.attachShader(program,shader(gl.FRAGMENT_SHADER,fs));gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));gl.useProgram(program);
 const attrib={pos:gl.getAttribLocation(program,'aPos'),normal:gl.getAttribLocation(program,'aNormal')},uni={};for(const n of ['uMVP','uRotation','uBase','uLights','uKeyColor','uFillColor','uRimColor','uKeyDir','uFillDir','uRimDir'])uni[n]=gl.getUniformLocation(program,n);
 const buffer=gl.createBuffer(),lineBuffer=gl.createBuffer();const gridBuffer=gl.createBuffer();
-let obj={location:[0,0,0],rotation:[0,0,0],scale:[1,1,1]},tool='select',ortho=false,pan=[0,0],modal=null,shape='cube',smoothShade=true,wire=false,showNormals=false,spin=false,gridVisible=true,axesVisible=true,rx=24,ry=32,zoom=5.5,hue=210,phase=0,drag=null,last=0,dirty=true,mesh=null;
+let selected=false,obj={location:[0,0,0],rotation:[0,0,0],scale:[1,1,1]},tool='select',ortho=false,pan=[0,0],modal=null,shape='cube',smoothShade=true,wire=false,showNormals=false,spin=false,gridVisible=true,axesVisible=true,rx=24,ry=32,zoom=5.5,hue=210,phase=0,drag=null,last=0,dirty=true,mesh=null;
 let lights={key:1.5,fill:.8,rim:1.3,ambient:.32};
 const presets={studio:[1.5,.8,1.3,.32],soft:[1.2,1.1,.5,.55],dramatic:[2,.15,1.8,.07],neon:[.7,1.5,2,.13],product:[1.8,1.3,1.7,.45],sunset:[1.9,.35,.9,.25]};
 const lightNames={key:'Key Light · Warm',fill:'Fill Light · Cool',rim:'Rim Light',ambient:'Ambient'};
@@ -56,6 +56,51 @@ function matMul(a,b){let out=new Float32Array(16);for(let c=0;c<4;c++)for(let r=
 function rotation(){let a=rx*Math.PI/180,b=(ry+phase)*Math.PI/180,ca=Math.cos(a),sa=Math.sin(a),cb=Math.cos(b),sb=Math.sin(b);return new Float32Array([cb,sb*sa,-sb*ca,0,ca,sa,sb,-cb*sa,cb*ca])}
 function objectMatrix(){const [a,b,c]=obj.rotation.map(x=>x*Math.PI/180),[sx,sy,sz]=obj.scale,[tx,ty,tz]=obj.location,ca=Math.cos(a),sa=Math.sin(a),cb=Math.cos(b),sb=Math.sin(b),cc=Math.cos(c),sc=Math.sin(c);return new Float32Array([cc*cb*sx,sc*cb*sx,-sb*sx,0,(cc*sb*sa-sc*ca)*sy,(sc*sb*sa+cc*ca)*sy,cb*sa*sy,0,(cc*sb*ca+sc*sa)*sz,(sc*sb*ca-cc*sa)*sz,cb*ca*sz,0,tx,ty,tz,1])}
 function rotation3FromModel(m){const n=[Math.hypot(m[0],m[1],m[2]),Math.hypot(m[4],m[5],m[6]),Math.hypot(m[8],m[9],m[10])];return new Float32Array([m[0]/n[0],m[1]/n[0],m[2]/n[0],m[4]/n[1],m[5]/n[1],m[6]/n[1],m[8]/n[2],m[9]/n[2],m[10]/n[2]])}
+
+function drawSelectionOutline(mvp){
+ if(!selected)return;
+ if(!drawSelectionOutline.program){
+  const v='attribute vec3 aPos;attribute vec3 aNormal;uniform mat4 uMVP;void main(){gl_Position=uMVP*vec4(aPos+aNormal*0.035,1.0);}';
+  const f='precision mediump float;void main(){gl_FragColor=vec4(1.0,0.46,0.055,1.0);}';
+  const p=gl.createProgram();gl.attachShader(p,shader(gl.VERTEX_SHADER,v));gl.attachShader(p,shader(gl.FRAGMENT_SHADER,f));gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(p));
+  drawSelectionOutline.program=p;drawSelectionOutline.pos=gl.getAttribLocation(p,'aPos');drawSelectionOutline.normal=gl.getAttribLocation(p,'aNormal');drawSelectionOutline.mvp=gl.getUniformLocation(p,'uMVP');
+ }
+ gl.useProgram(drawSelectionOutline.program);
+ gl.uniformMatrix4fv(drawSelectionOutline.mvp,false,mvp);
+ gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+ gl.enableVertexAttribArray(drawSelectionOutline.pos);gl.enableVertexAttribArray(drawSelectionOutline.normal);
+ gl.vertexAttribPointer(drawSelectionOutline.pos,3,gl.FLOAT,false,24,0);
+ gl.vertexAttribPointer(drawSelectionOutline.normal,3,gl.FLOAT,false,24,12);
+ gl.cullFace(gl.FRONT);
+ gl.depthMask(false);
+ gl.drawArrays(gl.TRIANGLES,0,mesh.tri.length/6);
+ gl.depthMask(true);gl.cullFace(gl.BACK);
+ gl.disableVertexAttribArray(drawSelectionOutline.pos);gl.disableVertexAttribArray(drawSelectionOutline.normal);
+ gl.useProgram(program);
+}
+function pickObject(clientX,clientY){
+ const rect=canvas.getBoundingClientRect(),w=rect.width,h=rect.height;
+ if(w<=0||h<=0)return false;
+ const rot=rotation(),model=new Float32Array([rot[0],rot[1],rot[2],0,rot[3],rot[4],rot[5],0,rot[6],rot[7],rot[8],0,0,0,0,1]);
+ const view=new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,pan[0],pan[1],-zoom,1]);
+ const near=.1,far=100,f=1/Math.tan(Math.PI/7),aspect=w/h;
+ const proj=ortho?new Float32Array([1/(aspect*zoom*.36),0,0,0,0,1/(zoom*.36),0,0,0,0,-2/(far-near),0,0,0,-(far+near)/(far-near),1]):new Float32Array([f/aspect,0,0,0,0,f,0,0,0,0,(far+near)/(near-far),-1,0,0,2*far*near/(near-far),0]);
+ const mvp=matMul(proj,matMul(view,matMul(model,objectMatrix())));
+ const project=(x,y,z)=>{const a=mvp;const px=a[0]*x+a[4]*y+a[8]*z+a[12],py=a[1]*x+a[5]*y+a[9]*z+a[13],pw=a[3]*x+a[7]*y+a[11]*z+a[15];return pw>0?[rect.left+(px/pw+1)*w/2,rect.top+(1-py/pw)*h/2]:null};
+ const mx=clientX,my=clientY,tri=mesh.tri;
+ for(let i=0;i<tri.length;i+=18){
+  const a=project(tri[i],tri[i+1],tri[i+2]),b=project(tri[i+6],tri[i+7],tri[i+8]),c=project(tri[i+12],tri[i+13],tri[i+14]);if(!a||!b||!c)continue;
+  const cross=(u,v,p)=>(v[0]-u[0])*(p[1]-u[1])-(v[1]-u[1])*(p[0]-u[0]);
+  const p=[mx,my],d=cross(a,b,c);
+  if(Math.abs(d)<1e-6)continue;
+  const t1=cross(a,b,p)/d,t2=cross(b,c,p)/d,t3=cross(c,a,p)/d;
+  if(t1>=-0.00001&&t2>=-0.00001&&t3>=-0.00001)return true;
+ }
+ return false;
+}
+function setSelected(value){selected=value;const row=$('objectRow');if(row)row.classList.toggle('selected',selected);dirty=true}
+
 function draw(){const rect=host.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2),w=Math.max(1,Math.round(rect.width*dpr)),h=Math.max(1,Math.round(rect.height*dpr));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}gl.viewport(0,0,w,h);gl.clearColor(.07,.11,.17,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.CULL_FACE);gl.cullFace(gl.BACK);gl.frontFace(gl.CCW);
 const rot=rotation(),model=new Float32Array([rot[0],rot[1],rot[2],0,rot[3],rot[4],rot[5],0,rot[6],rot[7],rot[8],0,0,0,0,1]);
 const view=new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,pan[0],pan[1],-zoom,1]);
@@ -66,12 +111,13 @@ gl.uniform3fv(uni.uBase,base);gl.uniform4f(uni.uLights,lights.key,lights.fill,li
 gl.uniform3f(uni.uKeyColor,1,.76,.52);gl.uniform3f(uni.uFillColor,.41,.68,1);gl.uniform3f(uni.uRimColor,.86,.92,1);
 gl.uniform3fv(uni.uKeyDir,norm([-.65,.75,1]));gl.uniform3fv(uni.uFillDir,norm([.85,.2,.7]));gl.uniform3fv(uni.uRimDir,norm([.3,.8,-1]));
 gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,mesh.tri,gl.STATIC_DRAW);gl.enableVertexAttribArray(attrib.pos);gl.enableVertexAttribArray(attrib.normal);gl.vertexAttribPointer(attrib.pos,3,gl.FLOAT,false,24,0);gl.vertexAttribPointer(attrib.normal,3,gl.FLOAT,false,24,12);gl.drawArrays(gl.TRIANGLES,0,mesh.tri.length/6);
+drawSelectionOutline(matMul(proj,matMul(view,finalModel)));
 if(wire||showNormals){gl.disable(gl.CULL_FACE);gl.bindBuffer(gl.ARRAY_BUFFER,lineBuffer);const data=wire?mesh.lines:mesh.normals;const expanded=new Float32Array(data.length*2);for(let i=0;i<data.length/3;i++){expanded.set(data.subarray(i*3,i*3+3),i*6);expanded.set([0,0,1],i*6+3)}gl.bufferData(gl.ARRAY_BUFFER,expanded,gl.DYNAMIC_DRAW);gl.vertexAttribPointer(attrib.pos,3,gl.FLOAT,false,24,0);gl.vertexAttribPointer(attrib.normal,3,gl.FLOAT,false,24,12);gl.uniform3f(uni.uBase,wire?.85:.12,wire?.85:1,wire?.85:.35);gl.uniform4f(uni.uLights,0,0,0,3);gl.drawArrays(gl.LINES,0,expanded.length/6)}
 drawGuides(proj,view,model);updateGizmo();
 }
 function markActive(selector,selected){document.querySelectorAll(selector).forEach(b=>b.classList.toggle('active',b.dataset.shape===selected||b.dataset.preset===selected))}
 function buildLights(){const el=$('lights');el.replaceChildren();for(const id of ['key','fill','rim','ambient']){const box=document.createElement('div'),label=document.createElement('label');label.className='sliderlabel';label.textContent=lightNames[id];const output=document.createElement('output');output.textContent=lights[id].toFixed(2);label.appendChild(output);const input=document.createElement('input');input.type='range';input.min=0;input.max=2.5;input.step=.05;input.value=lights[id];input.addEventListener('input',()=>{lights[id]=+input.value;output.textContent=lights[id].toFixed(2);markActive('[data-preset]',null);dirty=true});box.append(label,input);el.appendChild(box)}}
-document.querySelectorAll('[data-shape]').forEach(b=>b.addEventListener('click',()=>{shape=b.dataset.shape;geometry();markActive('[data-shape]',shape);$('objectName').textContent=shape[0].toUpperCase()+shape.slice(1)}));
+document.querySelectorAll('[data-shape]').forEach(b=>b.addEventListener('click',()=>{shape=b.dataset.shape;setSelected(true);geometry();markActive('[data-shape]',shape);$('objectName').textContent=shape[0].toUpperCase()+shape.slice(1)}));
 document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{['key','fill','rim','ambient'].forEach((id,i)=>lights[id]=presets[b.dataset.preset][i]);buildLights();markActive('[data-preset]',b.dataset.preset);dirty=true}));
 canvas.addEventListener('contextmenu',e=>e.preventDefault());
 canvas.addEventListener('dragstart',e=>e.preventDefault());
@@ -79,7 +125,7 @@ canvas.addEventListener('mousedown',e=>{if(e.button===1)e.preventDefault()});
 // Camera controls: dragging never changes camera distance. Only the wheel/zoom slider do.
 canvas.addEventListener('contextmenu',e=>e.preventDefault());
 canvas.addEventListener('pointerdown',e=>{
-  if(e.button!==1){if(e.button===0){e.preventDefault();if(modal)finishModal(true)}return}
+  if(e.button!==1){if(e.button===0){e.preventDefault();if(modal)finishModal(true);else setSelected(pickObject(e.clientX,e.clientY))}return}
   e.preventDefault();
   drag={x:e.clientX,y:e.clientY,mode:e.shiftKey?'pan':'orbit',pointerId:e.pointerId};
   canvas.setPointerCapture(e.pointerId);
@@ -126,7 +172,7 @@ $('smooth').addEventListener('change',e=>{smoothShade=e.target.checked;geometry(
 $('wire').addEventListener('change',e=>{wire=e.target.checked;dirty=true});
 $('normals').addEventListener('change',e=>{showNormals=e.target.checked;dirty=true});
 $('spin').addEventListener('change',e=>{spin=e.target.checked;dirty=true});$('grid').addEventListener('change',e=>{gridVisible=e.target.checked;dirty=true});$('axes').addEventListener('change',e=>{axesVisible=e.target.checked;dirty=true});
-function reset(){rx=24;ry=32;zoom=5.5;hue=210;shape='cube';obj={location:[0,0,0],rotation:[0,0,0],scale:[1,1,1]};pan=[0,0];ortho=false;modal=null;syncTransform();$('ortho').textContent='Perspective';$('objectName').textContent='Cube';smoothShade=true;wire=false;showNormals=false;spin=false;gridVisible=true;axesVisible=true;phase=0;lights={key:1.5,fill:.8,rim:1.3,ambient:.32};$('zoom').value=zoom;$('zoomValue').textContent=zoom.toFixed(1);$('hue').value=hue;$('hueValue').textContent=hue+'°';for(const id of ['wire','normals','spin'])$(id).checked=false;$('smooth').checked=true;$('grid').checked=true;$('axes').checked=true;markActive('[data-shape]',shape);markActive('[data-preset]','studio');buildLights();geometry();$('status').textContent='Scéna resetována'}
+function reset(){setSelected(false);rx=24;ry=32;zoom=5.5;hue=210;shape='cube';obj={location:[0,0,0],rotation:[0,0,0],scale:[1,1,1]};pan=[0,0];ortho=false;modal=null;syncTransform();$('ortho').textContent='Perspective';$('objectName').textContent='Cube';smoothShade=true;wire=false;showNormals=false;spin=false;gridVisible=true;axesVisible=true;phase=0;lights={key:1.5,fill:.8,rim:1.3,ambient:.32};$('zoom').value=zoom;$('zoomValue').textContent=zoom.toFixed(1);$('hue').value=hue;$('hueValue').textContent=hue+'°';for(const id of ['wire','normals','spin'])$(id).checked=false;$('smooth').checked=true;$('grid').checked=true;$('axes').checked=true;markActive('[data-shape]',shape);markActive('[data-preset]','studio');buildLights();geometry();$('status').textContent='Scéna resetována'}
 async function save(){try{draw();const result=await window.studioDesktop.savePNG(canvas.toDataURL('image/png'));$('status').textContent=result.ok?'PNG uloženo':result.canceled?'Ukládání zrušeno':'Chyba ukládání'}catch(e){$('status').textContent='Chyba: '+e.message}}
 $('save').addEventListener('click',save);$('reset').addEventListener('click',reset);
 window.studioDesktop.onCommand(command=>{if(command==='save')save();else if(command==='reset')reset();else if(['wire','normals','spin'].includes(command))$(command).click()});
@@ -146,5 +192,5 @@ $('deleteObject').addEventListener('click',()=>{$('status').textContent='Mazán�
 
 document.addEventListener('keydown',e=>{const t=e.target;if(['INPUT','TEXTAREA','SELECT'].includes(t.tagName)||e.ctrlKey||e.metaKey||e.altKey)return;const k=e.key.toLowerCase();if(modal){if(['x','y','z'].includes(k)){modal.axis=k;e.preventDefault();return}if(k==='escape'){finishModal(false);e.preventDefault();return}if(k==='enter'){finishModal(true);e.preventDefault();return}}if(k==='home'){frameObject();e.preventDefault()}else if(k==='g'||k==='r'||k==='s'){beginModal({g:'move',r:'rotate',s:'scale'}[k],{clientX:lastPointerX,clientY:lastPointerY});chooseTool({g:'move',r:'rotate',s:'scale'}[k]);e.preventDefault()}else if(k==='q'){finishModal(true);chooseTool('select')}else if(k==='f'){frameObject()}else if(e.code==='Numpad5'){ortho=!ortho;$('ortho').textContent=ortho?'Orthographic':'Perspective';dirty=true}else if(e.code==='Numpad1'){rx=0;ry=0;dirty=true}else if(e.code==='Numpad3'){rx=0;ry=90;dirty=true}else if(e.code==='Numpad7'){rx=90;ry=0;dirty=true}else if(k==='escape'){finishModal(false)}});
 let lastPointerX=0,lastPointerY=0;canvas.addEventListener('pointermove',e=>{lastPointerX=e.clientX;lastPointerY=e.clientY});
-$('status').textContent='NAV v3 · LMB: select · MMB: orbit · Shift+MMB: pan · Wheel: zoom';initTransforms();geometry();buildLights();requestAnimationFrame(frame);
+$('status').textContent='NAV v3 · LMB: select · MMB: orbit · Shift+MMB: pan · Wheel: zoom';$('objectRow').addEventListener('click',()=>setSelected(true));setSelected(false);initTransforms();geometry();buildLights();requestAnimationFrame(frame);
 })();
