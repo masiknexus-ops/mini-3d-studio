@@ -77,10 +77,9 @@ canvas.addEventListener('contextmenu',e=>e.preventDefault());
 // Camera controls: dragging never changes camera distance. Only the wheel/zoom slider do.
 canvas.addEventListener('contextmenu',e=>e.preventDefault());
 canvas.addEventListener('pointerdown',e=>{
-  if(e.button!==0&&e.button!==1)return;
-  if(e.button===0&&modal){finishModal(true);return}
+  if(e.button!==1){if(e.button===0&&modal)finishModal(true);return}
   e.preventDefault();
-  drag={x:e.clientX,y:e.clientY,mode:e.button===1&&e.shiftKey?'pan':'orbit',pointerId:e.pointerId};
+  drag={x:e.clientX,y:e.clientY,mode:e.shiftKey?'pan':'orbit',pointerId:e.pointerId};
   canvas.setPointerCapture(e.pointerId);
   canvas.style.cursor='grabbing';
 });
@@ -118,7 +117,7 @@ function endCameraDrag(e){
 canvas.addEventListener('pointerup',endCameraDrag);
 canvas.addEventListener('pointercancel',endCameraDrag);
 canvas.addEventListener('lostpointercapture',e=>{if(drag&&drag.pointerId===e.pointerId){drag=null;canvas.style.cursor='grab'}});
-canvas.addEventListener('wheel',e=>{e.preventDefault();zoom=Math.max(3.5,Math.min(12,zoom+Math.sign(e.deltaY)*.3));$('zoom').value=zoom;$('zoomValue').textContent=zoom.toFixed(1);dirty=true},{passive:false});
+canvas.addEventListener('wheel',e=>{e.preventDefault();if(drag)return;zoom=Math.max(3.5,Math.min(12,zoom+Math.sign(e.deltaY)*.3));$('zoom').value=zoom;$('zoomValue').textContent=zoom.toFixed(1);dirty=true},{passive:false});
 $('zoom').addEventListener('input',e=>{zoom=+e.target.value;$('zoomValue').textContent=zoom.toFixed(1);dirty=true});
 $('hue').addEventListener('input',e=>{hue=+e.target.value;$('hueValue').textContent=hue+'°';dirty=true});
 $('smooth').addEventListener('change',e=>{smoothShade=e.target.checked;geometry()});
