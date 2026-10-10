@@ -60,7 +60,7 @@ function rotation3FromModel(m){const n=[Math.hypot(m[0],m[1],m[2]),Math.hypot(m[
 function drawSelectionOutline(mvp){
  if(!selected)return;
  if(!drawSelectionOutline.program){
-  const v='attribute vec3 aPos;attribute vec3 aNormal;uniform mat4 uMVP;void main(){gl_Position=uMVP*vec4(aPos+aNormal*0.035,1.0);}';
+  const v='attribute vec3 aPos;attribute vec3 aNormal;uniform mat4 uMVP;void main(){gl_Position=uMVP*vec4(aPos*1.045,1.0);}';
   const f='precision mediump float;void main(){gl_FragColor=vec4(1.0,0.46,0.055,1.0);}';
   const p=gl.createProgram();gl.attachShader(p,shader(gl.VERTEX_SHADER,v));gl.attachShader(p,shader(gl.FRAGMENT_SHADER,f));gl.linkProgram(p);
   if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(p));
@@ -74,32 +74,37 @@ function drawSelectionOutline(mvp){
  gl.vertexAttribPointer(drawSelectionOutline.normal,3,gl.FLOAT,false,24,12);
  gl.cullFace(gl.FRONT);
  gl.depthMask(false);
+ gl.depthFunc(gl.LEQUAL);
  gl.drawArrays(gl.TRIANGLES,0,mesh.tri.length/6);
- gl.depthMask(true);gl.cullFace(gl.BACK);
- gl.disableVertexAttribArray(drawSelectionOutline.pos);gl.disableVertexAttribArray(drawSelectionOutline.normal);
+ gl.depthMask(true);gl.depthFunc(gl.LESS);gl.cullFace(gl.BACK);
  gl.useProgram(program);
+ gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+ gl.enableVertexAttribArray(attrib.pos);gl.enableVertexAttribArray(attrib.normal);
+ gl.vertexAttribPointer(attrib.pos,3,gl.FLOAT,false,24,0);
+ gl.vertexAttribPointer(attrib.normal,3,gl.FLOAT,false,24,12);
 }
 function pickObject(clientX,clientY){
+ // Screen-space triangle hit testing with the exact same MVP used by the renderer.
  const rect=canvas.getBoundingClientRect(),w=rect.width,h=rect.height;
- if(w<=0||h<=0)return false;
+ if(w<1||h<1||!mesh)return false;
  const rot=rotation(),model=new Float32Array([rot[0],rot[1],rot[2],0,rot[3],rot[4],rot[5],0,rot[6],rot[7],rot[8],0,0,0,0,1]);
  const view=new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,pan[0],pan[1],-zoom,1]);
  const near=.1,far=100,f=1/Math.tan(Math.PI/7),aspect=w/h;
  const proj=ortho?new Float32Array([1/(aspect*zoom*.36),0,0,0,0,1/(zoom*.36),0,0,0,0,-2/(far-near),0,0,0,-(far+near)/(far-near),1]):new Float32Array([f/aspect,0,0,0,0,f,0,0,0,0,(far+near)/(near-far),-1,0,0,2*far*near/(near-far),0]);
  const mvp=matMul(proj,matMul(view,matMul(model,objectMatrix())));
- const project=(x,y,z)=>{const a=mvp;const px=a[0]*x+a[4]*y+a[8]*z+a[12],py=a[1]*x+a[5]*y+a[9]*z+a[13],pw=a[3]*x+a[7]*y+a[11]*z+a[15];return pw>0?[rect.left+(px/pw+1)*w/2,rect.top+(1-py/pw)*h/2]:null};
- const mx=clientX,my=clientY,tri=mesh.tri;
+ const project=(x,y,z)=>{const a=mvp,px=a[0]*x+a[4]*y+a[8]*z+a[12],py=a[1]*x+a[5]*y+a[9]*z+a[13],pw=a[3]*x+a[7]*y+a[11]*z+a[15];return pw>0?[(px/pw+1)*w/2,(1-py/pw)*h/2]:null};
+ const mx=clientX-rect.left,my=clientY-rect.top,tri=mesh.tri;
  for(let i=0;i<tri.length;i+=18){
-  const a=project(tri[i],tri[i+1],tri[i+2]),b=project(tri[i+6],tri[i+7],tri[i+8]),c=project(tri[i+12],tri[i+13],tri[i+14]);if(!a||!b||!c)continue;
-  const cross=(u,v,p)=>(v[0]-u[0])*(p[1]-u[1])-(v[1]-u[1])*(p[0]-u[0]);
-  const p=[mx,my],d=cross(a,b,c);
-  if(Math.abs(d)<1e-6)continue;
-  const t1=cross(a,b,p)/d,t2=cross(b,c,p)/d,t3=cross(c,a,p)/d;
-  if(t1>=-0.00001&&t2>=-0.00001&&t3>=-0.00001)return true;
+  const p=project(tri[i],tri[i+1],tri[i+2]),q=project(tri[i+6],tri[i+7],tri[i+8]),r=project(tri[i+12],tri[i+13],tri[i+14]);
+  if(!p||!q||!r)continue;
+  const cross=(a,b,c)=>(b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);
+  const area=cross(p,q,r);if(Math.abs(area)<1e-7)continue;
+  const pt=[mx,my],u=cross(p,q,pt)/area,v=cross(q,r,pt)/area,t=cross(r,p,pt)/area;
+  if(u>=-1e-5&&v>=-1e-5&&t>=-1e-5)return true;
  }
  return false;
 }
-function setSelected(value){selected=value;const row=$('objectRow');if(row)row.classList.toggle('selected',selected);dirty=true}
+function setSelected(value){selected=value;$('status').textContent=selected?'Object selected · '+shape:'Object Mode · no selection';const row=$('objectRow');if(row)row.classList.toggle('selected',selected);dirty=true}
 
 function draw(){const rect=host.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2),w=Math.max(1,Math.round(rect.width*dpr)),h=Math.max(1,Math.round(rect.height*dpr));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}gl.viewport(0,0,w,h);gl.clearColor(.07,.11,.17,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.CULL_FACE);gl.cullFace(gl.BACK);gl.frontFace(gl.CCW);
 const rot=rotation(),model=new Float32Array([rot[0],rot[1],rot[2],0,rot[3],rot[4],rot[5],0,rot[6],rot[7],rot[8],0,0,0,0,1]);
