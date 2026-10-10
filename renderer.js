@@ -8,8 +8,8 @@ const fs=`precision highp float;varying vec3 vNormal;varying vec3 vPos;uniform v
 function shader(type,src){let s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s}
 const program=gl.createProgram();gl.attachShader(program,shader(gl.VERTEX_SHADER,vs));gl.attachShader(program,shader(gl.FRAGMENT_SHADER,fs));gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));gl.useProgram(program);
 const attrib={pos:gl.getAttribLocation(program,'aPos'),normal:gl.getAttribLocation(program,'aNormal')},uni={};for(const n of ['uMVP','uRotation','uBase','uLights','uKeyColor','uFillColor','uRimColor','uKeyDir','uFillDir','uRimDir'])uni[n]=gl.getUniformLocation(program,n);
-const buffer=gl.createBuffer(),lineBuffer=gl.createBuffer();
-let shape='cube',smoothShade=true,wire=false,showNormals=false,spin=false,rx=24,ry=32,zoom=5.5,hue=210,phase=0,drag=null,last=0,dirty=true,mesh=null;
+const buffer=gl.createBuffer(),lineBuffer=gl.createBuffer();const gridBuffer=gl.createBuffer();
+let shape='cube',smoothShade=true,wire=false,showNormals=false,spin=false,gridVisible=true,axesVisible=true,rx=24,ry=32,zoom=5.5,hue=210,phase=0,drag=null,last=0,dirty=true,mesh=null;
 let lights={key:1.5,fill:.8,rim:1.3,ambient:.32};
 const presets={studio:[1.5,.8,1.3,.32],soft:[1.2,1.1,.5,.55],dramatic:[2,.15,1.8,.07],neon:[.7,1.5,2,.13],product:[1.8,1.3,1.7,.45],sunset:[1.9,.35,.9,.25]};
 const lightNames={key:'Key Light · Warm',fill:'Fill Light · Cool',rim:'Rim Light',ambient:'Ambient'};
@@ -36,6 +36,22 @@ normLines.push(...center,...center.map((v,i)=>v+n[i]*.18))
 }
 mesh={tri:new Float32Array(tris),lines:new Float32Array(lines),normals:new Float32Array(normLines)};dirty=true;
 }
+
+// World-space grid and axis guides. They are rendered as unlit geometry with depth testing.
+function guideGeometry(){const data=[];function segment(a,b,color){data.push(...a,...color,...b,...color)}for(let i=-10;i<=10;i++){if(i!==0){const col=i%5===0?[.29,.38,.50]:[.19,.26,.35];segment([i,-1.55,-10],[i,-1.55,10],col);segment([-10,-1.55,i],[10,-1.55,i],col)}}return new Float32Array(data)}
+const gridData=guideGeometry();
+function drawGuides(proj,view,rot){if(!gridVisible&&!axesVisible)return;
+const gv=`attribute vec3 aPosition;attribute vec3 aColor;uniform mat4 uTransform;varying vec3 vColor;void main(){gl_Position=uTransform*vec4(aPosition,1.);vColor=aColor;}`;
+const gf=`precision mediump float;varying vec3 vColor;void main(){gl_FragColor=vec4(vColor,1.);}`;
+if(!drawGuides.program){const p=gl.createProgram();gl.attachShader(p,shader(gl.VERTEX_SHADER,gv));gl.attachShader(p,shader(gl.FRAGMENT_SHADER,gf));gl.linkProgram(p);if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(p));drawGuides.program=p;drawGuides.position=gl.getAttribLocation(p,'aPosition');drawGuides.color=gl.getAttribLocation(p,'aColor');drawGuides.transform=gl.getUniformLocation(p,'uTransform')}
+const p=drawGuides.program;gl.useProgram(p);const mvp=matMul(proj,matMul(view,rot));gl.uniformMatrix4fv(drawGuides.transform,false,mvp);
+gl.bindBuffer(gl.ARRAY_BUFFER,gridBuffer);gl.enableVertexAttribArray(drawGuides.position);gl.enableVertexAttribArray(drawGuides.color);gl.vertexAttribPointer(drawGuides.position,3,gl.FLOAT,false,24,0);gl.vertexAttribPointer(drawGuides.color,3,gl.FLOAT,false,24,12);
+if(gridVisible){gl.bufferData(gl.ARRAY_BUFFER,gridData,gl.STATIC_DRAW);gl.drawArrays(gl.LINES,0,gridData.length/6)}
+if(axesVisible){const axis=new Float32Array([-10,-1.54,0,1,.30,.30,10,-1.54,0,1,.30,.30,0,-1.54,-10,.25,.5,1,0,-1.54,10,.25,.5,1,0,-1.54,0,.36,1,.5,0,5,0,.36,1,.5]);gl.bufferData(gl.ARRAY_BUFFER,axis,gl.STATIC_DRAW);gl.drawArrays(gl.LINES,0,axis.length/6)}
+gl.useProgram(program);
+}
+function updateGizmo(){const c=$('orientation');if(!c)return;const x=c.getContext('2d'),dpr=Math.min(devicePixelRatio||1,2),s=112;if(c.width!==s*dpr){c.width=s*dpr;c.height=s*dpr}x.setTransform(dpr,0,0,dpr,0,0);x.clearRect(0,0,s,s);const r=rotation();const axes=[{v:[1,0,0],name:'X',color:'#ff6a70'},{v:[0,1,0],name:'Y',color:'#67e99c'},{v:[0,0,1],name:'Z',color:'#68aaff'}];for(const a of axes){const v=[r[0]*a.v[0]+r[3]*a.v[1]+r[6]*a.v[2],r[1]*a.v[0]+r[4]*a.v[1]+r[7]*a.v[2],r[2]*a.v[0]+r[5]*a.v[1]+r[8]*a.v[2]];a.point=v;a.z=v[2]}axes.sort((a,b)=>a.z-b.z);for(const a of axes){const [xx,yy,zz]=a.point,px=56+xx*32,py=56-yy*32;x.strokeStyle=a.color;x.globalAlpha=zz<0?.4:1;x.lineWidth=2.5;x.beginPath();x.moveTo(56,56);x.lineTo(px,py);x.stroke();x.fillStyle=a.color;x.beginPath();x.arc(px,py,11,0,Math.PI*2);x.fill();x.fillStyle='#08121f';x.font='bold 12px Segoe UI';x.textAlign='center';x.textBaseline='middle';x.fillText(a.name,px,py)}x.globalAlpha=1}
+
 function matMul(a,b){let out=new Float32Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++)for(let k=0;k<4;k++)out[c*4+r]+=a[k*4+r]*b[c*4+k];return out}
 function rotation(){let a=rx*Math.PI/180,b=(ry+phase)*Math.PI/180,ca=Math.cos(a),sa=Math.sin(a),cb=Math.cos(b),sb=Math.sin(b);return new Float32Array([cb,sb*sa,-sb*ca,0,ca,sa,sb,-cb*sa,cb*ca])}
 function draw(){const rect=host.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2),w=Math.max(1,Math.round(rect.width*dpr)),h=Math.max(1,Math.round(rect.height*dpr));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}gl.viewport(0,0,w,h);gl.clearColor(.07,.11,.17,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.CULL_FACE);gl.cullFace(gl.BACK);gl.frontFace(gl.CCW);
@@ -47,7 +63,7 @@ const h6=(hue%360)/60,k=Math.floor(h6),t=h6-k,base=[[1,t,0],[1-t,1,0],[0,1,t],[0
 gl.uniform3fv(uni.uBase,base);gl.uniform4f(uni.uLights,lights.key,lights.fill,lights.rim,lights.ambient);
 gl.uniform3f(uni.uKeyColor,1,.76,.52);gl.uniform3f(uni.uFillColor,.41,.68,1);gl.uniform3f(uni.uRimColor,.86,.92,1);
 gl.uniform3fv(uni.uKeyDir,norm([-.65,.75,1]));gl.uniform3fv(uni.uFillDir,norm([.85,.2,.7]));gl.uniform3fv(uni.uRimDir,norm([.3,.8,-1]));
-gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,mesh.tri,gl.STATIC_DRAW);gl.enableVertexAttribArray(attrib.pos);gl.enableVertexAttribArray(attrib.normal);gl.vertexAttribPointer(attrib.pos,3,gl.FLOAT,false,24,0);gl.vertexAttribPointer(attrib.normal,3,gl.FLOAT,false,24,12);gl.drawArrays(gl.TRIANGLES,0,mesh.tri.length/6);
+gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,mesh.tri,gl.STATIC_DRAW);gl.enableVertexAttribArray(attrib.pos);gl.enableVertexAttribArray(attrib.normal);gl.vertexAttribPointer(attrib.pos,3,gl.FLOAT,false,24,0);gl.vertexAttribPointer(attrib.normal,3,gl.FLOAT,false,24,12);gl.drawArrays(gl.TRIANGLES,0,mesh.tri.length/6);drawGuides(proj,view,model);updateGizmo();
 if(wire||showNormals){gl.disable(gl.CULL_FACE);gl.bindBuffer(gl.ARRAY_BUFFER,lineBuffer);const data=wire?mesh.lines:mesh.normals;const expanded=new Float32Array(data.length*2);for(let i=0;i<data.length/3;i++){expanded.set(data.subarray(i*3,i*3+3),i*6);expanded.set([0,0,1],i*6+3)}gl.bufferData(gl.ARRAY_BUFFER,expanded,gl.DYNAMIC_DRAW);gl.vertexAttribPointer(attrib.pos,3,gl.FLOAT,false,24,0);gl.vertexAttribPointer(attrib.normal,3,gl.FLOAT,false,24,12);gl.uniform3f(uni.uBase,wire?.85:.12,wire?.85:1,wire?.85:.35);gl.uniform4f(uni.uLights,0,0,0,3);gl.drawArrays(gl.LINES,0,expanded.length/6)}
 }
 function markActive(selector,selected){document.querySelectorAll(selector).forEach(b=>b.classList.toggle('active',b.dataset.shape===selected||b.dataset.preset===selected))}
@@ -63,8 +79,8 @@ $('hue').addEventListener('input',e=>{hue=+e.target.value;$('hueValue').textCont
 $('smooth').addEventListener('change',e=>{smoothShade=e.target.checked;geometry()});
 $('wire').addEventListener('change',e=>{wire=e.target.checked;dirty=true});
 $('normals').addEventListener('change',e=>{showNormals=e.target.checked;dirty=true});
-$('spin').addEventListener('change',e=>{spin=e.target.checked;dirty=true});
-function reset(){rx=24;ry=32;zoom=5.5;hue=210;shape='cube';smoothShade=true;wire=false;showNormals=false;spin=false;phase=0;lights={key:1.5,fill:.8,rim:1.3,ambient:.32};$('zoom').value=zoom;$('zoomValue').textContent=zoom.toFixed(1);$('hue').value=hue;$('hueValue').textContent=hue+'°';for(const id of ['wire','normals','spin'])$(id).checked=false;$('smooth').checked=true;markActive('[data-shape]',shape);markActive('[data-preset]','studio');buildLights();geometry();$('status').textContent='Scéna resetována'}
+$('spin').addEventListener('change',e=>{spin=e.target.checked;dirty=true});$('grid').addEventListener('change',e=>{gridVisible=e.target.checked;dirty=true});$('axes').addEventListener('change',e=>{axesVisible=e.target.checked;dirty=true});
+function reset(){rx=24;ry=32;zoom=5.5;hue=210;shape='cube';smoothShade=true;wire=false;showNormals=false;spin=false;gridVisible=true;axesVisible=true;phase=0;lights={key:1.5,fill:.8,rim:1.3,ambient:.32};$('zoom').value=zoom;$('zoomValue').textContent=zoom.toFixed(1);$('hue').value=hue;$('hueValue').textContent=hue+'°';for(const id of ['wire','normals','spin'])$(id).checked=false;$('smooth').checked=true;$('grid').checked=true;$('axes').checked=true;markActive('[data-shape]',shape);markActive('[data-preset]','studio');buildLights();geometry();$('status').textContent='Scéna resetována'}
 async function save(){try{draw();const result=await window.studioDesktop.savePNG(canvas.toDataURL('image/png'));$('status').textContent=result.ok?'PNG uloženo':result.canceled?'Ukládání zrušeno':'Chyba ukládání'}catch(e){$('status').textContent='Chyba: '+e.message}}
 $('save').addEventListener('click',save);$('reset').addEventListener('click',reset);
 window.studioDesktop.onCommand(command=>{if(command==='save')save();else if(command==='reset')reset();else if(['wire','normals','spin'].includes(command))$(command).click()});
