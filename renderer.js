@@ -74,10 +74,50 @@ function buildLights(){const el=$('lights');el.replaceChildren();for(const id of
 document.querySelectorAll('[data-shape]').forEach(b=>b.addEventListener('click',()=>{shape=b.dataset.shape;geometry();markActive('[data-shape]',shape);$('objectName').textContent=shape[0].toUpperCase()+shape.slice(1)}));
 document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{['key','fill','rim','ambient'].forEach((id,i)=>lights[id]=presets[b.dataset.preset][i]);buildLights();markActive('[data-preset]',b.dataset.preset);dirty=true}));
 canvas.addEventListener('contextmenu',e=>e.preventDefault());
-canvas.addEventListener('pointerdown',e=>{if(e.button===1||e.button===0&&(!modal||e.altKey)){drag={x:e.clientX,y:e.clientY,pan:e.shiftKey,zoom:e.ctrlKey};canvas.setPointerCapture(e.pointerId);canvas.style.cursor='grabbing'}else if(e.button===0&&modal){finishModal(true)}});
-canvas.addEventListener('pointermove',e=>{if(drag){const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(drag.pan){pan[0]+=dx*.01;pan[1]-=dy*.01}else if(drag.zoom){zoom=Math.max(2,Math.min(30,zoom+dy*.025));$('zoom').value=Math.min(12,zoom);$('zoomValue').textContent=zoom.toFixed(1)}else{ry+=dx*.45;rx=Math.max(-89,Math.min(89,rx+dy*.45))}drag.x=e.clientX;drag.y=e.clientY;dirty=true;return}if(modal){const dx=e.clientX-modal.x,dy=e.clientY-modal.y;const amount=(dx-dy)*.012;let vec=modal.start.slice();if(modal.kind==='move'){if(modal.axis){const i='xyz'.indexOf(modal.axis);vec[i]+=amount}else{vec[0]+=dx*.009;vec[1]-=dy*.009}}else if(modal.kind==='rotate'){vec[modal.axis?'xyz'.indexOf(modal.axis):2]+=amount*65}else if(modal.kind==='scale'){const factor=Math.max(.05,1+amount);if(modal.axis)vec['xyz'.indexOf(modal.axis)]*=factor;else vec=vec.map(v=>v*factor)}obj[modal.kind==='move'?'location':modal.kind==='rotate'?'rotation':'scale']=vec;syncTransform();dirty=true;return}});
-for(const name of ['pointerup','pointercancel','lostpointercapture'])canvas.addEventListener(name,()=>{drag=null;canvas.style.cursor='default'});
-
+// Camera controls: dragging never changes camera distance. Only the wheel/zoom slider do.
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+canvas.addEventListener('pointerdown',e=>{
+  if(e.button!==0&&e.button!==1)return;
+  if(e.button===0&&modal){finishModal(true);return}
+  e.preventDefault();
+  drag={x:e.clientX,y:e.clientY,mode:e.button===1&&e.shiftKey?'pan':'orbit',pointerId:e.pointerId};
+  canvas.setPointerCapture(e.pointerId);
+  canvas.style.cursor='grabbing';
+});
+canvas.addEventListener('pointermove',e=>{
+  if(drag){
+    if(e.pointerId!==drag.pointerId)return;
+    const dx=Math.max(-80,Math.min(80,e.clientX-drag.x));
+    const dy=Math.max(-80,Math.min(80,e.clientY-drag.y));
+    if(drag.mode==='pan'){pan[0]+=dx*.009;pan[1]-=dy*.009}
+    else{ry+=dx*.35;rx=Math.max(-89,Math.min(89,rx+dy*.35))}
+    drag.x=e.clientX;drag.y=e.clientY;dirty=true;return;
+  }
+  if(modal){
+    const dx=e.clientX-modal.x,dy=e.clientY-modal.y,amount=(dx-dy)*.012;
+    let vec=modal.start.slice();
+    if(modal.kind==='move'){
+      if(modal.axis){vec['xyz'.indexOf(modal.axis)]+=amount}
+      else{vec[0]+=dx*.009;vec[1]-=dy*.009}
+    }else if(modal.kind==='rotate'){
+      vec[modal.axis?'xyz'.indexOf(modal.axis):2]+=amount*65;
+    }else if(modal.kind==='scale'){
+      const factor=Math.max(.05,1+amount);
+      if(modal.axis)vec['xyz'.indexOf(modal.axis)]*=factor;
+      else vec=vec.map(v=>v*factor);
+    }
+    obj[modal.kind==='move'?'location':modal.kind==='rotate'?'rotation':'scale']=vec;
+    syncTransform();dirty=true;
+  }
+});
+function endCameraDrag(e){
+  if(!drag||e.pointerId!==drag.pointerId)return;
+  if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);
+  drag=null;canvas.style.cursor='grab';
+}
+canvas.addEventListener('pointerup',endCameraDrag);
+canvas.addEventListener('pointercancel',endCameraDrag);
+canvas.addEventListener('lostpointercapture',e=>{if(drag&&drag.pointerId===e.pointerId){drag=null;canvas.style.cursor='grab'}});
 canvas.addEventListener('wheel',e=>{e.preventDefault();zoom=Math.max(3.5,Math.min(12,zoom+Math.sign(e.deltaY)*.3));$('zoom').value=zoom;$('zoomValue').textContent=zoom.toFixed(1);dirty=true},{passive:false});
 $('zoom').addEventListener('input',e=>{zoom=+e.target.value;$('zoomValue').textContent=zoom.toFixed(1);dirty=true});
 $('hue').addEventListener('input',e=>{hue=+e.target.value;$('hueValue').textContent=hue+'°';dirty=true});
@@ -102,8 +142,8 @@ $('frame').addEventListener('click',frameObject);$('focus').addEventListener('cl
 $('applyTransform').addEventListener('click',()=>{obj={location:[0,0,0],rotation:[0,0,0],scale:[1,1,1]};syncTransform();dirty=true});
 $('duplicate').addEventListener('click',()=>{$('status').textContent='Duplikace objektů zatím není implementovaná'});
 $('deleteObject').addEventListener('click',()=>{$('status').textContent='Mazání objektů zatím není implementované'});
-canvas.addEventListener('pointerup',e=>{if(modal&&e.button===0)finishModal(true)});
-document.addEventListener('keydown',e=>{const t=e.target;if(['INPUT','TEXTAREA','SELECT'].includes(t.tagName)||e.ctrlKey||e.metaKey||e.altKey)return;const k=e.key.toLowerCase();if(modal){if(['x','y','z'].includes(k)){modal.axis=k;e.preventDefault();return}if(k==='escape'){finishModal(false);e.preventDefault();return}if(k==='enter'){finishModal(true);e.preventDefault();return}}if(k==='g'||k==='r'||k==='s'){beginModal({g:'move',r:'rotate',s:'scale'}[k],{clientX:lastPointerX,clientY:lastPointerY});chooseTool({g:'move',r:'rotate',s:'scale'}[k]);e.preventDefault()}else if(k==='q'){finishModal(true);chooseTool('select')}else if(k==='f'){frameObject()}else if(e.code==='Numpad5'){ortho=!ortho;$('ortho').textContent=ortho?'Orthographic':'Perspective';dirty=true}else if(e.code==='Numpad1'){rx=0;ry=0;dirty=true}else if(e.code==='Numpad3'){rx=0;ry=90;dirty=true}else if(e.code==='Numpad7'){rx=90;ry=0;dirty=true}else if(k==='escape'){finishModal(false)}});
+
+document.addEventListener('keydown',e=>{const t=e.target;if(['INPUT','TEXTAREA','SELECT'].includes(t.tagName)||e.ctrlKey||e.metaKey||e.altKey)return;const k=e.key.toLowerCase();if(modal){if(['x','y','z'].includes(k)){modal.axis=k;e.preventDefault();return}if(k==='escape'){finishModal(false);e.preventDefault();return}if(k==='enter'){finishModal(true);e.preventDefault();return}}if(k==='home'){frameObject();e.preventDefault()}else if(k==='g'||k==='r'||k==='s'){beginModal({g:'move',r:'rotate',s:'scale'}[k],{clientX:lastPointerX,clientY:lastPointerY});chooseTool({g:'move',r:'rotate',s:'scale'}[k]);e.preventDefault()}else if(k==='q'){finishModal(true);chooseTool('select')}else if(k==='f'){frameObject()}else if(e.code==='Numpad5'){ortho=!ortho;$('ortho').textContent=ortho?'Orthographic':'Perspective';dirty=true}else if(e.code==='Numpad1'){rx=0;ry=0;dirty=true}else if(e.code==='Numpad3'){rx=0;ry=90;dirty=true}else if(e.code==='Numpad7'){rx=90;ry=0;dirty=true}else if(k==='escape'){finishModal(false)}});
 let lastPointerX=0,lastPointerY=0;canvas.addEventListener('pointermove',e=>{lastPointerX=e.clientX;lastPointerY=e.clientY});
 initTransforms();geometry();buildLights();requestAnimationFrame(frame);
 })();
