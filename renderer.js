@@ -116,7 +116,7 @@ function renderOutliner(){
  const root=$('objectRow').parentElement;
  root.querySelectorAll('.scene-entry').forEach(n=>n.remove());
  $('objectRow').style.display='none';
- for(const entry of scene){
+ for(const entry of scene.slice().reverse()){
   const row=document.createElement('div');row.className='object-row scene-entry'+(entry===activeObject&&selected?' selected':'');
   row.textContent='▣  '+entry.name;row.addEventListener('click',()=>selectEntry(entry));root.insertBefore(row,$('objectRow').nextSibling);
  }
@@ -128,10 +128,10 @@ function selectEntry(entry){
  $('status').textContent=entry?'Selected · '+entry.name:'No object selected';dirty=true;
 }
 function duplicateObject(){
- if(!activeObject||!selected){$('status').textContent='Select an object first';return}
+ if(!activeObject||!selected){$('status').textContent='Nejprve označ objekt';return}
  const source=activeObject;
  const clone={shape:source.shape,mesh:source.mesh,transform:{location:source.transform.location.slice(),rotation:source.transform.rotation.slice(),scale:source.transform.scale.slice()},name:source.name+'.'+String(scene.length).padStart(3,'0')};
- clone.transform.location[0]+=1.5;
+ clone.transform.location[0]+=2.5;
  scene.push(clone);selectEntry(clone);$('status').textContent='Duplicated · '+clone.name;
 }
 function deleteSelected(){
