@@ -150,42 +150,6 @@ function pickScene(x,y){
 function setSelected(value){selected=value;$('status').textContent=selected?'Object selected · '+shape:'Object Mode · no selection';const row=$('objectRow');if(row)row.classList.toggle('selected',selected);dirty=true}
 
 
-// A screen-space transform gizmo, rendered above WebGL so the axes are always visible.
-const pivotOverlay=document.createElement('canvas');
-pivotOverlay.id='pivot-overlay';
-pivotOverlay.setAttribute('aria-hidden','true');
-host.appendChild(pivotOverlay);
-function drawObjectOrigin(proj,view,cameraModel,entry){
- const rect=canvas.getBoundingClientRect(),w=rect.width,h=rect.height,dpr=Math.min(window.devicePixelRatio||1,2);
- if(pivotOverlay.width!==Math.round(w*dpr)||pivotOverlay.height!==Math.round(h*dpr)){
-  pivotOverlay.width=Math.round(w*dpr);pivotOverlay.height=Math.round(h*dpr);
- }
- const ctx=pivotOverlay.getContext('2d');
- ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
- if(!entry||!selected||!w||!h)return;
- const m=matMul(proj,matMul(view,matMul(cameraModel,objectMatrix())));
- function project(x,y,z){
-  const px=m[0]*x+m[4]*y+m[8]*z+m[12],py=m[1]*x+m[5]*y+m[9]*z+m[13],pw=m[3]*x+m[7]*y+m[11]*z+m[15];
-  return pw>0?[(px/pw+1)*w/2,(1-py/pw)*h/2]:null;
- }
- const origin=project(0,0,0);if(!origin)return;
- const axes=[{v:[1,0,0],color:'#ef565b',name:'X'},{v:[0,1,0],color:'#5ce285',name:'Y'},{v:[0,0,1],color:'#579bff',name:'Z'}];
- ctx.lineWidth=3;ctx.lineCap='round';ctx.font='bold 12px Segoe UI, sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
- for(const axis of axes){
-  let end=project(...axis.v);if(!end)continue;
-  let dx=end[0]-origin[0],dy=end[1]-origin[1],len=Math.hypot(dx,dy);
-  if(len<.5)continue;
-  const dist=65,ex=origin[0]+dx/len*dist,ey=origin[1]+dy/len*dist;
-  ctx.strokeStyle='#151719';ctx.lineWidth=6;ctx.beginPath();ctx.moveTo(...origin);ctx.lineTo(ex,ey);ctx.stroke();
-  ctx.strokeStyle=axis.color;ctx.lineWidth=3.5;ctx.beginPath();ctx.moveTo(...origin);ctx.lineTo(ex,ey);ctx.stroke();
-  const angle=Math.atan2(ey-origin[1],ex-origin[0]);
-  ctx.fillStyle=axis.color;ctx.beginPath();ctx.moveTo(ex,ey);ctx.lineTo(ex-12*Math.cos(angle-.48),ey-12*Math.sin(angle-.48));ctx.lineTo(ex-12*Math.cos(angle+.48),ey-12*Math.sin(angle+.48));ctx.closePath();ctx.fill();
-  ctx.fillStyle='#17181b';ctx.strokeStyle=axis.color;ctx.lineWidth=2;ctx.beginPath();ctx.arc(ex,ey,11,0,Math.PI*2);ctx.fill();ctx.stroke();
-  ctx.fillStyle='#fff';ctx.fillText(axis.name,ex,ey+.5);
- }
- ctx.fillStyle='#ff991c';ctx.strokeStyle='#17181b';ctx.lineWidth=3;ctx.beginPath();ctx.arc(origin[0],origin[1],7,0,Math.PI*2);ctx.fill();ctx.stroke();
- ctx.fillStyle='#ffe2aa';ctx.beginPath();ctx.arc(origin[0],origin[1],2,0,Math.PI*2);ctx.fill();
-}
 function draw(){const rect=host.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2),w=Math.max(1,Math.round(rect.width*dpr)),h=Math.max(1,Math.round(rect.height*dpr));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}gl.viewport(0,0,w,h);gl.clearColor(.07,.11,.17,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.CULL_FACE);gl.cullFace(gl.BACK);gl.frontFace(gl.CCW);
 const rot=rotation(),model=new Float32Array([rot[0],rot[1],rot[2],0,rot[3],rot[4],rot[5],0,rot[6],rot[7],rot[8],0,0,0,0,1]);
 const view=new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,pan[0],pan[1],-zoom,1]);
@@ -201,7 +165,7 @@ if(activeObject===entry&&selected)drawSelectionOutline(matMul(proj,matMul(view,f
 if(wire||showNormals){gl.disable(gl.CULL_FACE);gl.bindBuffer(gl.ARRAY_BUFFER,lineBuffer);const data=wire?mesh.lines:mesh.normals;const expanded=new Float32Array(data.length*2);for(let i=0;i<data.length/3;i++){expanded.set(data.subarray(i*3,i*3+3),i*6);expanded.set([0,0,1],i*6+3)}gl.bufferData(gl.ARRAY_BUFFER,expanded,gl.DYNAMIC_DRAW);gl.vertexAttribPointer(attrib.pos,3,gl.FLOAT,false,24,0);gl.vertexAttribPointer(attrib.normal,3,gl.FLOAT,false,24,12);gl.uniform3f(uni.uBase,wire?.85:.12,wire?.85:1,wire?.85:.35);gl.uniform4f(uni.uLights,0,0,0,3);gl.drawArrays(gl.LINES,0,expanded.length/6)}
 }
 if(activeObject){obj=activeObject.transform;mesh=activeObject.mesh;shape=activeObject.shape}
-drawGuides(proj,view,model);if(activeObject&&selected){obj=activeObject.transform;drawObjectOrigin(proj,view,model,activeObject)}else drawObjectOrigin(proj,view,model,null);updateGizmo();
+drawGuides(proj,view,model);updateGizmo();
 }
 function markActive(selector,selected){document.querySelectorAll(selector).forEach(b=>b.classList.toggle('active',b.dataset.shape===selected||b.dataset.preset===selected))}
 function buildLights(){const el=$('lights');el.replaceChildren();for(const id of ['key','fill','rim','ambient']){const box=document.createElement('div'),label=document.createElement('label');label.className='sliderlabel';label.textContent=lightNames[id];const output=document.createElement('output');output.textContent=lights[id].toFixed(2);label.appendChild(output);const input=document.createElement('input');input.type='range';input.min=0;input.max=2.5;input.step=.05;input.value=lights[id];input.addEventListener('input',()=>{lights[id]=+input.value;output.textContent=lights[id].toFixed(2);markActive('[data-preset]',null);dirty=true});box.append(label,input);el.appendChild(box)}}
