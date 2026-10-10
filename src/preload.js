@@ -1,0 +1,1 @@
+const {contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('studioDesktop',{savePNG:data=>ipcRenderer.invoke('save-png',data),onCommand:callback=>ipcRenderer.on('studio-command',(_event,command)=>callback(command))});
