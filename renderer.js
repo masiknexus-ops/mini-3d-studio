@@ -74,10 +74,12 @@ function buildLights(){const el=$('lights');el.replaceChildren();for(const id of
 document.querySelectorAll('[data-shape]').forEach(b=>b.addEventListener('click',()=>{shape=b.dataset.shape;geometry();markActive('[data-shape]',shape);$('objectName').textContent=shape[0].toUpperCase()+shape.slice(1)}));
 document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{['key','fill','rim','ambient'].forEach((id,i)=>lights[id]=presets[b.dataset.preset][i]);buildLights();markActive('[data-preset]',b.dataset.preset);dirty=true}));
 canvas.addEventListener('contextmenu',e=>e.preventDefault());
+canvas.addEventListener('dragstart',e=>e.preventDefault());
+canvas.addEventListener('mousedown',e=>{if(e.button===1)e.preventDefault()});
 // Camera controls: dragging never changes camera distance. Only the wheel/zoom slider do.
 canvas.addEventListener('contextmenu',e=>e.preventDefault());
 canvas.addEventListener('pointerdown',e=>{
-  if(e.button!==1){if(e.button===0&&modal)finishModal(true);return}
+  if(e.button!==1){if(e.button===0){e.preventDefault();if(modal)finishModal(true)}return}
   e.preventDefault();
   drag={x:e.clientX,y:e.clientY,mode:e.shiftKey?'pan':'orbit',pointerId:e.pointerId};
   canvas.setPointerCapture(e.pointerId);
@@ -144,5 +146,5 @@ $('deleteObject').addEventListener('click',()=>{$('status').textContent='Mazán�
 
 document.addEventListener('keydown',e=>{const t=e.target;if(['INPUT','TEXTAREA','SELECT'].includes(t.tagName)||e.ctrlKey||e.metaKey||e.altKey)return;const k=e.key.toLowerCase();if(modal){if(['x','y','z'].includes(k)){modal.axis=k;e.preventDefault();return}if(k==='escape'){finishModal(false);e.preventDefault();return}if(k==='enter'){finishModal(true);e.preventDefault();return}}if(k==='home'){frameObject();e.preventDefault()}else if(k==='g'||k==='r'||k==='s'){beginModal({g:'move',r:'rotate',s:'scale'}[k],{clientX:lastPointerX,clientY:lastPointerY});chooseTool({g:'move',r:'rotate',s:'scale'}[k]);e.preventDefault()}else if(k==='q'){finishModal(true);chooseTool('select')}else if(k==='f'){frameObject()}else if(e.code==='Numpad5'){ortho=!ortho;$('ortho').textContent=ortho?'Orthographic':'Perspective';dirty=true}else if(e.code==='Numpad1'){rx=0;ry=0;dirty=true}else if(e.code==='Numpad3'){rx=0;ry=90;dirty=true}else if(e.code==='Numpad7'){rx=90;ry=0;dirty=true}else if(k==='escape'){finishModal(false)}});
 let lastPointerX=0,lastPointerY=0;canvas.addEventListener('pointermove',e=>{lastPointerX=e.clientX;lastPointerY=e.clientY});
-initTransforms();geometry();buildLights();requestAnimationFrame(frame);
+$('status').textContent='NAV v3 · LMB: select · MMB: orbit · Shift+MMB: pan · Wheel: zoom';initTransforms();geometry();buildLights();requestAnimationFrame(frame);
 })();
