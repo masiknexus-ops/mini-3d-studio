@@ -150,6 +150,106 @@ function pickScene(x,y){
 function setSelected(value){selected=value;$('status').textContent=selected?'Object selected · '+shape:'Object Mode · no selection';const row=$('objectRow');if(row)row.classList.toggle('selected',selected);dirty=true}
 
 
+
+/* Interactive Blender-style transform gizmo, screen-space overlay. Camera controls remain on MMB. */
+const gizmoCanvas=document.createElement('canvas');
+gizmoCanvas.setAttribute('aria-label','Object transform gizmo');
+Object.assign(gizmoCanvas.style,{position:'absolute',inset:'0',width:'100%',height:'100%',pointerEvents:'none',zIndex:'4'});
+host.appendChild(gizmoCanvas);
+let gizmoHandles=[],gizmoDrag=null;
+const gizmoColors=['#f45d61','#68dd83','#619fff'];
+function cameraMatrices(width,height){
+ const r=rotation(),model=new Float32Array([r[0],r[1],r[2],0,r[3],r[4],r[5],0,r[6],r[7],r[8],0,0,0,0,1]);
+ const view=new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,pan[0],pan[1],-zoom,1]);
+ const f=1/Math.tan(Math.PI/7),aspect=width/height,near=.1,far=100;
+ const proj=ortho?new Float32Array([1/(aspect*zoom*.36),0,0,0,0,1/(zoom*.36),0,0,0,0,-2/(far-near),0,0,0,-(far+near)/(far-near),1]):new Float32Array([f/aspect,0,0,0,0,f,0,0,0,0,(far+near)/(near-far),-1,0,0,2*far*near/(near-far),0]);
+ return {model,view,proj};
+}
+function gizmoProjection(){
+ const rect=canvas.getBoundingClientRect();if(!rect.width||!rect.height||!activeObject)return null;
+ const {model,view,proj}=cameraMatrices(rect.width,rect.height);
+ const m=matMul(proj,matMul(view,matMul(model,objectMatrix())));
+ function point(x,y,z){const px=m[0]*x+m[4]*y+m[8]*z+m[12],py=m[1]*x+m[5]*y+m[9]*z+m[13],pw=m[3]*x+m[7]*y+m[11]*z+m[15];return pw>.0001?[(px/pw+1)*rect.width/2,(1-py/pw)*rect.height/2]:null}
+ return {point,rect};
+}
+function drawTransformGizmo(){
+ const rect=canvas.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2),w=rect.width,h=rect.height;
+ const cw=Math.max(1,Math.round(w*dpr)),ch=Math.max(1,Math.round(h*dpr));
+ if(gizmoCanvas.width!==cw||gizmoCanvas.height!==ch){gizmoCanvas.width=cw;gizmoCanvas.height=ch}
+ const ctx=gizmoCanvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);gizmoHandles=[];
+ if(!selected||!activeObject||tool==='select')return;
+ const pr=gizmoProjection();if(!pr)return;const center=pr.point(0,0,0);if(!center)return;
+ const directions=[[1,0,0],[0,1,0],[0,0,1]];
+ ctx.lineCap='round';ctx.lineJoin='round';
+ for(let i=0;i<3;i++){
+  const axis='xyz'[i],raw=pr.point(...directions[i]);if(!raw)continue;
+  const dx=raw[0]-center[0],dy=raw[1]-center[1],len=Math.hypot(dx,dy);
+  if(len<2)continue;
+  const ux=dx/len,uy=dy/len,color=gizmoColors[i];
+  if(tool==='rotate'){
+   // Project a 3D ring in the local plane perpendicular to each axis.
+   const ring=[];const radius=.95;
+   for(let j=0;j<=96;j++){const t=j*Math.PI*2/96;let p;
+    if(i===0)p=pr.point(0,Math.cos(t)*radius,Math.sin(t)*radius);
+    else if(i===1)p=pr.point(Math.cos(t)*radius,0,Math.sin(t)*radius);
+    else p=pr.point(Math.cos(t)*radius,Math.sin(t)*radius,0);
+    if(p)ring.push(p);
+   }
+   if(ring.length<20)continue;
+   ctx.beginPath();ring.forEach((p,k)=>k?ctx.lineTo(...p):ctx.moveTo(...p));ctx.strokeStyle='#111b';ctx.lineWidth=6;ctx.stroke();ctx.strokeStyle=color;ctx.lineWidth=3;ctx.stroke();
+   gizmoHandles.push({axis,kind:'rotate',ring});
+  }else{
+   const length=72,ex=center[0]+ux*length,ey=center[1]+uy*length;
+   ctx.beginPath();ctx.moveTo(...center);ctx.lineTo(ex,ey);ctx.strokeStyle='#15181c';ctx.lineWidth=7;ctx.stroke();ctx.strokeStyle=color;ctx.lineWidth=3.5;ctx.stroke();
+   ctx.fillStyle=color;ctx.strokeStyle='#202124';ctx.lineWidth=1.5;
+   if(tool==='move'){
+    const angle=Math.atan2(uy,ux);ctx.beginPath();ctx.moveTo(ex+ux*9,ey+uy*9);ctx.lineTo(ex-ux*11-uy*7,ey-uy*11+ux*7);ctx.lineTo(ex-ux*11+uy*7,ey-uy*11-ux*7);ctx.closePath();ctx.fill();ctx.stroke();
+   }else{ctx.fillRect(ex-7,ey-7,14,14);ctx.strokeRect(ex-7,ey-7,14,14)}
+   gizmoHandles.push({axis,kind:tool,start:center.slice(),end:[ex,ey],dir:[ux,uy]});
+  }
+ }
+ ctx.beginPath();ctx.arc(...center,7,0,Math.PI*2);ctx.fillStyle='#f6a037';ctx.fill();ctx.lineWidth=2;ctx.strokeStyle='#222';ctx.stroke();
+ gizmoHandles.push({axis:null,kind:tool,center});
+}
+function segmentDistance(p,a,b){const vx=b[0]-a[0],vy=b[1]-a[1],den=vx*vx+vy*vy||1,t=Math.max(0,Math.min(1,((p[0]-a[0])*vx+(p[1]-a[1])*vy)/den));return Math.hypot(p[0]-a[0]-t*vx,p[1]-a[1]-t*vy)}
+function hitGizmo(clientX,clientY){
+ const rect=canvas.getBoundingClientRect(),p=[clientX-rect.left,clientY-rect.top];
+ for(const handle of gizmoHandles){
+  if(!handle.axis)continue;
+  if(handle.kind==='rotate'){
+   const ring=handle.ring;
+   for(let i=1;i<ring.length;i++)if(segmentDistance(p,ring[i-1],ring[i])<10)return handle;
+  }else if(segmentDistance(p,handle.start,handle.end)<12)return handle;
+ }
+ return null;
+}
+function startGizmoDrag(e,handle){
+ const kind=handle.kind,key=kind==='move'?'location':kind==='rotate'?'rotation':'scale';
+ gizmoDrag={pointerId:e.pointerId,handle,key,startX:e.clientX,startY:e.clientY,initial:activeObject.transform[key].slice()};
+ canvas.setPointerCapture(e.pointerId);e.preventDefault();e.stopPropagation();
+}
+function updateGizmoDrag(e){
+ if(!gizmoDrag||e.pointerId!==gizmoDrag.pointerId||!activeObject)return;
+ const d=gizmoDrag,h=d.handle,idx='xyz'.indexOf(h.axis),dx=e.clientX-d.startX,dy=e.clientY-d.startY;
+ const next=d.initial.slice();
+ if(h.kind==='rotate'){
+  const center=h.ring.reduce((acc,p)=>[acc[0]+p[0]/h.ring.length,acc[1]+p[1]/h.ring.length],[0,0]);
+  const a=Math.atan2(d.startY-canvas.getBoundingClientRect().top-center[1],d.startX-canvas.getBoundingClientRect().left-center[0]);
+  const b=Math.atan2(e.clientY-canvas.getBoundingClientRect().top-center[1],e.clientX-canvas.getBoundingClientRect().left-center[0]);
+  let delta=(b-a)*180/Math.PI;if(delta>180)delta-=360;if(delta< -180)delta+=360;
+  next[idx]+=delta;
+ }else{
+  const along=dx*h.dir[0]+dy*h.dir[1];
+  if(h.kind==='move'){
+   const pr=gizmoProjection(),o=pr?.point(0,0,0),v=pr?.point(...([0,1,2].map(i=>i===idx?1:0)));
+   const pixels=o&&v?Math.hypot(v[0]-o[0],v[1]-o[1]):65;
+   next[idx]+=along/Math.max(pixels,1);
+  }else next[idx]=Math.max(.01,d.initial[idx]*Math.max(.05,1+along/90));
+ }
+ activeObject.transform[d.key]=next;obj=activeObject.transform;syncTransform();dirty=true;
+}
+function stopGizmoDrag(e){if(!gizmoDrag||gizmoDrag.pointerId!==e.pointerId)return;gizmoDrag=null;if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);dirty=true}
+
 function draw(){const rect=host.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2),w=Math.max(1,Math.round(rect.width*dpr)),h=Math.max(1,Math.round(rect.height*dpr));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}gl.viewport(0,0,w,h);gl.clearColor(.07,.11,.17,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.CULL_FACE);gl.cullFace(gl.BACK);gl.frontFace(gl.CCW);
 const rot=rotation(),model=new Float32Array([rot[0],rot[1],rot[2],0,rot[3],rot[4],rot[5],0,rot[6],rot[7],rot[8],0,0,0,0,1]);
 const view=new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,pan[0],pan[1],-zoom,1]);
@@ -165,7 +265,7 @@ if(activeObject===entry&&selected)drawSelectionOutline(matMul(proj,matMul(view,f
 if(wire||showNormals){gl.disable(gl.CULL_FACE);gl.bindBuffer(gl.ARRAY_BUFFER,lineBuffer);const data=wire?mesh.lines:mesh.normals;const expanded=new Float32Array(data.length*2);for(let i=0;i<data.length/3;i++){expanded.set(data.subarray(i*3,i*3+3),i*6);expanded.set([0,0,1],i*6+3)}gl.bufferData(gl.ARRAY_BUFFER,expanded,gl.DYNAMIC_DRAW);gl.vertexAttribPointer(attrib.pos,3,gl.FLOAT,false,24,0);gl.vertexAttribPointer(attrib.normal,3,gl.FLOAT,false,24,12);gl.uniform3f(uni.uBase,wire?.85:.12,wire?.85:1,wire?.85:.35);gl.uniform4f(uni.uLights,0,0,0,3);gl.drawArrays(gl.LINES,0,expanded.length/6)}
 }
 if(activeObject){obj=activeObject.transform;mesh=activeObject.mesh;shape=activeObject.shape}
-drawGuides(proj,view,model);updateGizmo();
+drawGuides(proj,view,model);updateGizmo();drawTransformGizmo();
 }
 function markActive(selector,selected){document.querySelectorAll(selector).forEach(b=>b.classList.toggle('active',b.dataset.shape===selected||b.dataset.preset===selected))}
 function buildLights(){const el=$('lights');el.replaceChildren();for(const id of ['key','fill','rim','ambient']){const box=document.createElement('div'),label=document.createElement('label');label.className='sliderlabel';label.textContent=lightNames[id];const output=document.createElement('output');output.textContent=lights[id].toFixed(2);label.appendChild(output);const input=document.createElement('input');input.type='range';input.min=0;input.max=2.5;input.step=.05;input.value=lights[id];input.addEventListener('input',()=>{lights[id]=+input.value;output.textContent=lights[id].toFixed(2);markActive('[data-preset]',null);dirty=true});box.append(label,input);el.appendChild(box)}}
@@ -177,13 +277,14 @@ canvas.addEventListener('mousedown',e=>{if(e.button===1)e.preventDefault()});
 // Camera controls: dragging never changes camera distance. Only the wheel/zoom slider do.
 canvas.addEventListener('contextmenu',e=>e.preventDefault());
 canvas.addEventListener('pointerdown',e=>{
-  if(e.button!==1){if(e.button===0){e.preventDefault();if(modal)finishModal(true);else selectEntry(pickScene(e.clientX,e.clientY))}return}
+  if(e.button!==1){if(e.button===0){e.preventDefault();const handle=hitGizmo(e.clientX,e.clientY);if(handle&&activeObject&&selected){startGizmoDrag(e,handle);return}if(modal)finishModal(true);else selectEntry(pickScene(e.clientX,e.clientY))}return}
   e.preventDefault();
   drag={x:e.clientX,y:e.clientY,mode:e.shiftKey?'pan':'orbit',pointerId:e.pointerId};
   canvas.setPointerCapture(e.pointerId);
   canvas.style.cursor='grabbing';
 });
 canvas.addEventListener('pointermove',e=>{
+  if(gizmoDrag){updateGizmoDrag(e);return}
   if(drag){
     if(e.pointerId!==drag.pointerId)return;
     const dx=Math.max(-80,Math.min(80,e.clientX-drag.x));
@@ -214,8 +315,8 @@ function endCameraDrag(e){
   if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);
   drag=null;canvas.style.cursor='grab';
 }
-canvas.addEventListener('pointerup',endCameraDrag);
-canvas.addEventListener('pointercancel',endCameraDrag);
+canvas.addEventListener('pointerup',e=>{stopGizmoDrag(e);endCameraDrag(e)});
+canvas.addEventListener('pointercancel',e=>{stopGizmoDrag(e);endCameraDrag(e)});
 canvas.addEventListener('lostpointercapture',e=>{if(drag&&drag.pointerId===e.pointerId){drag=null;canvas.style.cursor='grab'}});
 canvas.addEventListener('wheel',e=>{e.preventDefault();if(drag)return;zoom=Math.max(3.5,Math.min(12,zoom+Math.sign(e.deltaY)*.3));$('zoom').value=zoom;$('zoomValue').textContent=zoom.toFixed(1);dirty=true},{passive:false});
 $('zoom').addEventListener('input',e=>{zoom=+e.target.value;$('zoomValue').textContent=zoom.toFixed(1);dirty=true});
@@ -224,25 +325,25 @@ $('smooth').addEventListener('change',e=>{smoothShade=e.target.checked;geometry(
 $('wire').addEventListener('change',e=>{wire=e.target.checked;dirty=true});
 $('normals').addEventListener('change',e=>{showNormals=e.target.checked;dirty=true});
 $('spin').addEventListener('change',e=>{spin=e.target.checked;dirty=true});$('grid').addEventListener('change',e=>{gridVisible=e.target.checked;dirty=true});$('axes').addEventListener('change',e=>{axesVisible=e.target.checked;dirty=true});
-function reset(){scene=[];activeObject=null;selected=false;rx=24;ry=32;zoom=5.5;hue=210;shape='cube';obj={location:[0,0,0],rotation:[0,0,0],scale:[1,1,1]};pan=[0,0];ortho=false;modal=null;syncTransform();$('ortho').textContent='Perspective';$('objectName').textContent='Cube';smoothShade=true;wire=false;showNormals=false;spin=false;gridVisible=true;axesVisible=true;phase=0;lights={key:1.5,fill:.8,rim:1.3,ambient:.32};$('zoom').value=zoom;$('zoomValue').textContent=zoom.toFixed(1);$('hue').value=hue;$('hueValue').textContent=hue+'°';for(const id of ['wire','normals','spin'])$(id).checked=false;$('smooth').checked=true;$('grid').checked=true;$('axes').checked=true;markActive('[data-shape]',shape);markActive('[data-preset]','studio');buildLights();const first=makeEntry('cube',{location:[0,0,0],rotation:[0,0,0],scale:[1,1,1]},'Cube');scene.push(first);selectEntry(first);$('status').textContent='Scéna resetována'}
+function reset(){gizmoDrag=null;chooseTool('select');scene=[];activeObject=null;selected=false;rx=24;ry=32;zoom=5.5;hue=210;shape='cube';obj={location:[0,0,0],rotation:[0,0,0],scale:[1,1,1]};pan=[0,0];ortho=false;modal=null;syncTransform();$('ortho').textContent='Perspective';$('objectName').textContent='Cube';smoothShade=true;wire=false;showNormals=false;spin=false;gridVisible=true;axesVisible=true;phase=0;lights={key:1.5,fill:.8,rim:1.3,ambient:.32};$('zoom').value=zoom;$('zoomValue').textContent=zoom.toFixed(1);$('hue').value=hue;$('hueValue').textContent=hue+'°';for(const id of ['wire','normals','spin'])$(id).checked=false;$('smooth').checked=true;$('grid').checked=true;$('axes').checked=true;markActive('[data-shape]',shape);markActive('[data-preset]','studio');buildLights();const first=makeEntry('cube',{location:[0,0,0],rotation:[0,0,0],scale:[1,1,1]},'Cube');scene.push(first);selectEntry(first);$('status').textContent='Scéna resetována'}
 async function save(){try{draw();const result=await window.studioDesktop.savePNG(canvas.toDataURL('image/png'));$('status').textContent=result.ok?'PNG uloženo':result.canceled?'Ukládání zrušeno':'Chyba ukládání'}catch(e){$('status').textContent='Chyba: '+e.message}}
 $('save').addEventListener('click',save);$('reset').addEventListener('click',reset);
 window.studioDesktop.onCommand(command=>{if(command==='save')save();else if(command==='reset')reset();else if(['wire','normals','spin'].includes(command))$(command).click()});
 function frame(t){const dt=Math.min(.05,(t-last)/1000||0);last=t;if(spin){phase+=dt*30;dirty=true}if(dirty){draw();dirty=false}requestAnimationFrame(frame)}
 function syncTransform(){for(const kind of ['location','rotation','scale'])for(let i=0;i<3;i++){const input=document.querySelector('[data-transform="'+kind+'"][data-axis="'+i+'"]');if(input&&document.activeElement!==input)input.value=obj[kind][i].toFixed(2)}}
 function initTransforms(){const target=$('transformControls');for(const kind of ['location','rotation','scale']){const group=document.createElement('div');group.className='transform-group';const title=document.createElement('div');title.className='group-title';title.textContent={location:'Location',rotation:'Rotation (°)',scale:'Scale'}[kind];group.appendChild(title);const fields=document.createElement('div');fields.className='transform-fields';for(let i=0;i<3;i++){const label=document.createElement('label');label.className='transform-field';label.textContent='XYZ'[i];const input=document.createElement('input');input.type='number';input.step=kind==='rotation'?'5':'0.1';input.dataset.transform=kind;input.dataset.axis=i;input.addEventListener('change',()=>{const v=Number(input.value);if(Number.isFinite(v)){obj[kind][i]=kind==='scale'?Math.max(.01,v):v;dirty=true}syncTransform()});label.appendChild(input);fields.appendChild(label)}group.appendChild(fields);target.appendChild(group)}syncTransform()}
-function chooseTool(name){tool=name;document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b.dataset.tool===name));$('status').textContent=name==='select'?'Object Mode':name.toUpperCase()+' · click and drag mouse using shortcut'}
+function chooseTool(name){if(modal)finishModal(true);tool=name;dirty=true;document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('active',b.dataset.tool===name));$('status').textContent=name==='select'?'Object Mode':name.toUpperCase()+' · click and drag mouse using shortcut'}
 function beginModal(kind,e){if(modal)finishModal(true);modal={kind,x:e?.clientX??canvas.getBoundingClientRect().left+canvas.width/2,y:e?.clientY??canvas.getBoundingClientRect().top+canvas.height/2,start:obj[kind==='move'?'location':kind==='rotate'?'rotation':'scale'].slice(),axis:null};$('status').textContent=kind.toUpperCase()+' · X/Y/Z axis · Enter confirm · Esc cancel'}
 function finishModal(accept){if(!modal)return;if(!accept)obj[modal.kind==='move'?'location':modal.kind==='rotate'?'rotation':'scale']=modal.start;modal=null;syncTransform();dirty=true;$('status').textContent='Object Mode'}
 function frameObject(){pan=[-obj.location[0],-obj.location[1]];zoom=5.5;$('zoom').value=zoom;$('zoomValue').textContent=zoom.toFixed(1);dirty=true}
-document.querySelectorAll('[data-tool]').forEach(b=>b.addEventListener('click',()=>{chooseTool(b.dataset.tool);if(b.dataset.tool!=='select')beginModal(b.dataset.tool,{clientX:lastPointerX,clientY:lastPointerY})}));
+document.querySelectorAll('[data-tool]').forEach(b=>b.addEventListener('click',()=>{chooseTool(b.dataset.tool);}));
 $('ortho').addEventListener('click',()=>{ortho=!ortho;$('ortho').textContent=ortho?'Orthographic':'Perspective';dirty=true});
 $('frame').addEventListener('click',frameObject);$('focus').addEventListener('click',frameObject);
-$('applyTransform').addEventListener('click',()=>{obj={location:[0,0,0],rotation:[0,0,0],scale:[1,1,1]};syncTransform();dirty=true});
+$('applyTransform').addEventListener('click',()=>{if(!activeObject)return;activeObject.transform={location:[0,0,0],rotation:[0,0,0],scale:[1,1,1]};obj=activeObject.transform;syncTransform();dirty=true});
 $('duplicate').addEventListener('click',duplicateObject);
 $('deleteObject').addEventListener('click',deleteSelected);
 
-document.addEventListener('keydown',e=>{const t=e.target;if(['INPUT','TEXTAREA','SELECT'].includes(t.tagName)||e.ctrlKey||e.metaKey||e.altKey)return;const k=e.key.toLowerCase();if(modal){if(['x','y','z'].includes(k)){modal.axis=k;e.preventDefault();return}if(k==='escape'){finishModal(false);e.preventDefault();return}if(k==='enter'){finishModal(true);e.preventDefault();return}}if(e.shiftKey&&k==='d'){duplicateObject();e.preventDefault();return}if(k==='delete'&&selected){deleteSelected();e.preventDefault();return}if(k==='home'){frameObject();e.preventDefault()}else if(k==='g'||k==='r'||k==='s'){beginModal({g:'move',r:'rotate',s:'scale'}[k],{clientX:lastPointerX,clientY:lastPointerY});chooseTool({g:'move',r:'rotate',s:'scale'}[k]);e.preventDefault()}else if(k==='q'){finishModal(true);chooseTool('select')}else if(k==='f'){frameObject()}else if(e.code==='Numpad5'){ortho=!ortho;$('ortho').textContent=ortho?'Orthographic':'Perspective';dirty=true}else if(e.code==='Numpad1'){rx=0;ry=0;dirty=true}else if(e.code==='Numpad3'){rx=0;ry=90;dirty=true}else if(e.code==='Numpad7'){rx=90;ry=0;dirty=true}else if(k==='escape'){finishModal(false)}});
+document.addEventListener('keydown',e=>{const t=e.target;if(['INPUT','TEXTAREA','SELECT'].includes(t.tagName)||e.ctrlKey||e.metaKey||e.altKey)return;const k=e.key.toLowerCase();if(modal){if(['x','y','z'].includes(k)){modal.axis=k;e.preventDefault();return}if(k==='escape'){finishModal(false);e.preventDefault();return}if(k==='enter'){finishModal(true);e.preventDefault();return}}if(e.shiftKey&&k==='d'){duplicateObject();e.preventDefault();return}if(k==='delete'&&selected){deleteSelected();e.preventDefault();return}if(k==='home'){frameObject();e.preventDefault()}else if(k==='g'||k==='r'||k==='s'){chooseTool({g:'move',r:'rotate',s:'scale'}[k]);e.preventDefault()}else if(k==='q'){finishModal(true);chooseTool('select')}else if(k==='f'){frameObject()}else if(e.code==='Numpad5'){ortho=!ortho;$('ortho').textContent=ortho?'Orthographic':'Perspective';dirty=true}else if(e.code==='Numpad1'){rx=0;ry=0;dirty=true}else if(e.code==='Numpad3'){rx=0;ry=90;dirty=true}else if(e.code==='Numpad7'){rx=90;ry=0;dirty=true}else if(k==='escape'){finishModal(false)}});
 let lastPointerX=0,lastPointerY=0;canvas.addEventListener('pointermove',e=>{lastPointerX=e.clientX;lastPointerY=e.clientY});
 $('status').textContent='NAV v3 · LMB: select · MMB: orbit · Shift+MMB: pan · Wheel: zoom';initTransforms();buildLights();const first=makeEntry('cube',obj,'Cube');scene.push(first);selectEntry(first);requestAnimationFrame(frame);
 })();
